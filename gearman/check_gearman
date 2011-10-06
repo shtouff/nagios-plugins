@@ -1,0 +1,137 @@
+#!/usr/bin/env perl
+
+# taken from: gearmand-0.24/libgearman-server/server.c:974
+# function->function_name, function->job_total,
+# function->job_running, function->worker_count);
+#
+# this code give following result with gearadmin --status
+#
+# FunctionName                job_total job_running  worker_count
+# AdsUpdateCountersFunction       0           0           4
+
+use strict;
+use warnings;
+
+use Nagios::Plugin;
+
+my $VERSION="0.2";
+my $np;
+
+$np = Nagios::Plugin->new(usage => "Usage: %s -f|--flist <func1[:threshold1],..,funcN[:thresholdN]> [--host|-H <host>] [--port|-p <port>] [ -c|--critworkers=<threshold> ] [ -w|--warnworkers=<threshold>] [-?|--usage] [-V|--version] [-h|--help] [-v|--verbose] [-t|--timeout=<timeout>]",
+                          version => $VERSION,
+                          blurb => 'This plugin checks a gearman job server, expecting that every function in function-list arg is registered by at least one worker, and expecting that job_total is not too much high.',
+                          license => "Brought to you AS IS, WITHOUT WARRANTY, under GPL. (C) Remi Paulmier <remi.paulmier\@gmail.com>",
+                          shortname => "CHECK_GEARMAN",
+                         );
+
+$np->add_arg(spec => 'flist|f=s',
+             help => q(Check for the functions listed in STRING, separated by comma. If optional threshold is given (separated by :), check that waiting jobs for this particular function are not exceeding that value),
+             required => 1,
+            );
+
+$np->add_arg(spec => 'host|H=s',
+             help => q(Check the host indicated in STRING),
+             required => 0,
+             default => 'localhost',
+            );
+
+$np->add_arg(spec => 'port|p=i',
+             help => q(Use the TCP port indicated in INTEGER),
+             required => 0,
+             default => 4730,
+            );
+
+$np->add_arg(spec => 'critworkers|c=i',
+             help => q(Exit with CRITICAL status if fewer than INTEGER workers have registered a particular function),
+             required => 0,
+             default => 1,
+            );
+
+$np->add_arg(spec => 'warnworkers|w=i',
+             help => q(Exit with WARNING status if fewer than INTEGER workers have registered a particular function),
+             required => 0,
+             default => 4,
+            );
+
+$np->getopts;
+my $ng = $np->opts;
+
+# manage timeout
+alarm $ng->timeout;
+
+my $runtime = {'status' => OK,
+               'message' => "Everything OK",
+              };
+
+# host & port
+my $host = $ng->get('host');
+my $port = $ng->get('port');
+
+# look for gearadmin, use nc if not found
+my @paths = grep { -x "$_/gearadmin" } split /:/, $ENV{PATH};
+my $cmd = "gearadmin --status -h $host -p $port";
+if (@paths == 0) {
+	print STDERR "gearadmin not found, using nc\n";
+	$cmd = "(echo status; sleep 1) | nc -q 1 $host $port";
+}
+
+foreach (`$cmd 2>/dev/null | grep -v '^\\.'`) {
+	chomp;
+
+	my ($fname, $job_total, $job_running, $worker_count) =
+	  split /[[:space:]]+/;
+
+	$runtime->{'funcs'}{"$fname"} = {job_total => $job_total,
+	                                 job_running => $job_running,
+	                                 worker_count => $worker_count };
+}
+
+# get function list
+my @flist = split /,/, $ng->get('flist');
+
+foreach (@flist) {
+
+	my ($fname, $fthreshold);
+
+	if (/\:/) {
+		($fname, $fthreshold) = split /:/;
+	} else {
+		($fname, $fthreshold) = ($_, -1);
+	}
+
+	if (!defined($runtime->{'funcs'}{"$fname"}) &&
+	    $runtime->{'status'} <= CRITICAL) {
+
+		($runtime->{'status'}, $runtime->{'message'}) =
+		  (CRITICAL, "function '$fname' is not registered in the server");
+	} else {
+		if ($runtime->{'funcs'}{"$fname"}{'worker_count'} <
+		    $ng->get('critworkers') && $runtime->{'status'} <= CRITICAL) {
+
+			($runtime->{'status'}, $runtime->{'message'}) =
+			  (CRITICAL,
+			   "less than " .$ng->get('critworkers').
+			   " workers were found having function '$fname' registered.");
+		}
+
+		if ($runtime->{'funcs'}{"$fname"}{'worker_count'} <
+		    $ng->get('warnworkers') && $runtime->{'status'} <= WARNING) {
+
+			($runtime->{'status'}, $runtime->{'message'}) =
+			  (WARNING,
+			   "less than " .$ng->get('warnworkers').
+			   " workers were found having function '$fname' registered.");
+		}
+
+		if ($runtime->{'funcs'}{"$fname"}{'job_total'} > $fthreshold
+		    && $fthreshold != -1 && $runtime->{'status'}<=WARNING) {
+
+			($runtime->{'status'}, $runtime->{'message'}) =
+			  (WARNING,
+			   $runtime->{'funcs'}{"$fname"}{'job_total'}. 
+			   " jobs for $fname exceeds threshold $fthreshold");
+		}
+	}
+}
+
+$np->nagios_exit($runtime->{'status'}, $runtime->{'message'});
