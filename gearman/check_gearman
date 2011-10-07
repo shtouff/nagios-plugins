@@ -14,7 +14,7 @@ use warnings;
 
 use Nagios::Plugin;
 
-my $VERSION="0.2";
+my $VERSION="0.2.1";
 my $np;
 
 $np = Nagios::Plugin->new(usage => "Usage: %s -f|--flist <func1[:threshold1],..,funcN[:thresholdN]> [--host|-H <host>] [--port|-p <port>] [ -c|--critworkers=<threshold> ] [ -w|--warnworkers=<threshold>] [-?|--usage] [-V|--version] [-h|--help] [-v|--verbose] [-t|--timeout=<timeout>]",
@@ -67,12 +67,15 @@ my $runtime = {'status' => OK,
 my $host = $ng->get('host');
 my $port = $ng->get('port');
 
+# verbosity
+my $verbose = $ng->get('verbose');
+
 # look for gearadmin, use nc if not found
 my @paths = grep { -x "$_/gearadmin" } split /:/, $ENV{PATH};
 my $cmd = "gearadmin --status -h $host -p $port";
 if (@paths == 0) {
-	print STDERR "gearadmin not found, using nc\n";
-	$cmd = "(echo status; sleep 1) | nc -q 1 $host $port";
+	print STDERR "gearadmin not found, using nc\n" if ($verbose != 0);
+	$cmd = "echo status | nc -w 1 $host $port";
 }
 
 foreach (`$cmd 2>/dev/null | grep -v '^\\.'`) {
