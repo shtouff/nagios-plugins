@@ -11,7 +11,7 @@ my $np;
 
 $np = Nagios::Plugin->new(usage => "Usage: %s [--host|-H <host>] [--port|-p <port>] [ -c|--critical=<threshold> ] [ -w|--warning=<threshold>] [-?|--usage] [-V|--version] [-h|--help] [-v|--verbose] [-t|--timeout=<timeout>]",
                           version => $VERSION,
-                          blurb => 'This plugin checks a redis server, expecting that a slave server is sync with master, and the replication delay is not too high.',
+                          blurb => 'This plugin checks the availability of a redis server, expecting that a slave server is sync with master, and the replication delay is not too high.',
                           license => "Brought to you AS IS, WITHOUT WARRANTY, under GPL. (C) Remi Paulmier <remi.paulmier\@gmail.com>",
                           shortname => "CHECK_REDIS",
                          );
