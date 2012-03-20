@@ -67,16 +67,94 @@ my $msg = "Everything is OK";
 
 $redis->ping || $np->nagios_exit( CRITICAL, "Can't ping server $host:$port" );
 
+$msg = "role : ".$info->{'role'};
 if ($info->{'role'} eq "slave") {
+	$msg .= " - master : ".$info->{'master_host'}." - link status : ".$info->{'master_link_status'};
+
+	if ( $info->{'master_link_status'} ne "up" ) {
+		$code = CRITICAL;
+	}
+
 	$code = $np->check_threshold(check => $info->{'master_last_io_seconds_ago'});
-	$msg = ("redis replication is late (" .
-	        $info->{'master_last_io_seconds_ago'} .
-	        "s)"
-	       ) if $code != OK;
+	if ( $code != OK ) {
+		$msg .= " - redis replication is late (".$info->{'master_last_io_seconds_ago'}."s)";
+	} else {
+		$msg .= " - redis replication is ok (".$info->{'master_last_io_seconds_ago'}."s)";
+	}
 
 	if ($info->{'master_sync_in_progress'} != 0) {
-		$msg = "redis replication sync is in progress";
+		$msg .= " - redis replication sync is in progress";
 		$code = CRITICAL;
+	}
+
+} else {
+	$msg .= " - connected slaves : ".$info->{'connected_slaves'};
+	if ( $info->{'connected_slaves'} > 0 ) {
+		$msg .= " ->";
+		for (my $count = 0; $count < $info->{'connected_slaves'} ; $count++) {
+			$msg .= " ".$info->{"slave$count"}
+		}
+	}
+
+	# Check number of keys on all slaves in all dbs present on the master - if replication is OK the number must be the same
+	foreach my $key ( keys %{$info} ) {
+		# loop over redis dbs
+		if ( $key =~ /^db[0-9]*$/ ) {
+			#  get nkeys in db
+			my $master_nkeys_in_db = $info->{"$key"};
+			my $pos = index($master_nkeys_in_db,',');
+			$master_nkeys_in_db = substr($master_nkeys_in_db,0,$pos);
+			$pos = index($master_nkeys_in_db,'=');
+			$master_nkeys_in_db = substr($master_nkeys_in_db,$pos+1);
+
+			# loop over slaves
+			my $sync_error=0;
+			foreach (my $count = 0; $count < $info->{'connected_slaves'} ; $count++) {
+				# get slave info
+				my ($slave_ip,$slave_repl_port,$slave_status) = split(/,/,$info->{"slave$count"});
+		
+				# only check online slaves
+				if ( "$slave_status" eq "online" ) {
+					# connect to slave
+					my $redis_slave;
+					eval {
+						$redis_slave = Redis->new( server => "$slave_ip:$port", debug => 0);
+					};
+					if ($@) {
+						$np->nagios_exit( CRITICAL, "Can't connect to $slave_ip:$port" );
+					}
+					$redis_slave->ping || $np->nagios_exit( CRITICAL, "Can't ping server $slave_ip:$port" );
+
+					# get slave redis info
+					my $slave_info = $redis_slave->info();
+
+					# get slave nkeys in redis db
+					my $slave_nkeys_in_db = "";
+					if ( $slave_nkeys_in_db = $slave_info->{"$key"} ) {
+						$pos = index($slave_nkeys_in_db,',');
+						$slave_nkeys_in_db = substr($slave_nkeys_in_db,0,$pos);
+						$pos = index($slave_nkeys_in_db,'=');
+						$slave_nkeys_in_db = substr($slave_nkeys_in_db,$pos+1);
+
+		#  				print "db : ".$key."- #keys on master : ".$master_nkeys_in_db." - #keys on slave : ".$slave_nkeys_in_db."\n";
+
+						# compare db nkeys from master and slave
+						if ( "$master_nkeys_in_db" ne "$slave_nkeys_in_db") {
+							$msg .= " - ".$key." not in sync : master #keys=".$master_nkeys_in_db." slave ".$slave_ip." #keys=".$slave_nkeys_in_db;
+							$sync_error++;
+							$code = CRITICAL;
+						}
+					} else {
+						$msg .= " - ".$key." not in sync : master #keys=".$master_nkeys_in_db." slave ".$slave_ip." #keys=(unknown db)";
+						$sync_error++;
+						$code = CRITICAL;
+					}
+				}
+			}
+			if ( $sync_error == 0 ) {
+				$msg .= " - ".$key." sync OK (".$master_nkeys_in_db." keys)";
+			}
+		}
 	}
 }
 
