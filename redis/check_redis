@@ -5,11 +5,12 @@ use strict;
 use Getopt::Long qw(:config gnu_getopt);
 use Redis;
 use Nagios::Plugin;
+use Data::Dumper;
 
 my $VERSION="0.1";
 my $np;
 
-$np = Nagios::Plugin->new(usage => "Usage: %s [--host|-H <host>] [--port|-p <port>] [ -c|--critical=<threshold> ] [ -w|--warning=<threshold>] [-?|--usage] [-V|--version] [-h|--help] [-v|--verbose] [-t|--timeout=<timeout>]",
+$np = Nagios::Plugin->new(usage => "Usage: %s [--host|-H <host>] [--port|-p <port>] [ -c|--critical=<threshold> ] [ -w|--warning=<threshold>] [-?|--usage] [-V|--version] [-h|--help] [-v|--verbose] [-t|--timeout=<timeout>] [ -k|--nkeyswarning=<threshold> ] [ -K|--nkeyscritical=<threshold> ]",
                           version => $VERSION,
                           blurb => 'This plugin checks the availability of a redis server, expecting that a slave server is sync with master, and the replication delay is not too high.',
                           license => "Brought to you AS IS, WITHOUT WARRANTY, under GPL. (C) Remi Paulmier <remi.paulmier\@gmail.com>",
@@ -38,6 +39,19 @@ $np->add_arg(spec => 'warning|w=s',
              help => q(Exit with WARNING status if replication delay is greater than INTEGER),
              required => 0,
              default => 1,
+            );
+
+$np->add_arg(spec => 'nkeyswarning|k=s',
+             help => q(Exit with WARNING status if the percentage difference in terms of number of keys in db between master and slave(s) is greater than FLOAT),
+             required => 0,
+             default => 0.05,
+            );
+
+
+$np->add_arg(spec => 'nkeyscritical|K=s',
+             help => q(Exit with CRITICAL status if the percentage difference in terms of the number of keys in db between master and slave(s) is greater than FLOAT),
+             required => 0,
+             default => 1.0,
             );
 
 $np->getopts;
@@ -139,10 +153,22 @@ if ($info->{'role'} eq "slave") {
 		#  				print "db : ".$key."- #keys on master : ".$master_nkeys_in_db." - #keys on slave : ".$slave_nkeys_in_db."\n";
 
 						# compare db nkeys from master and slave
-						if ( "$master_nkeys_in_db" ne "$slave_nkeys_in_db") {
-							$msg .= " - ".$key." not in sync : master #keys=".$master_nkeys_in_db." slave ".$slave_ip." #keys=".$slave_nkeys_in_db;
+						if ( "$master_nkeys_in_db" ne "$slave_nkeys_in_db" ) {
 							$sync_error++;
-							$code = CRITICAL;
+		
+							my $percent_nkeys_diff = 0.;
+							if ( $master_nkeys_in_db != 0 ) {
+								$percent_nkeys_diff = sprintf("%.2f", abs( $slave_nkeys_in_db - $master_nkeys_in_db) / $master_nkeys_in_db * 100.);
+							} else {
+								$percent_nkeys_diff = 100.;
+							}
+
+							$msg .= " - ".$key." not in sync : master #keys=".$master_nkeys_in_db." slave ".$slave_ip." #keys=".$slave_nkeys_in_db." (".$percent_nkeys_diff." % difference)";
+							if (  $percent_nkeys_diff >= $ng->get('nkeyscritical') ) {
+								$code = CRITICAL;
+							} elsif ( $percent_nkeys_diff >= $ng->get('nkeyswarning') ) {
+								$code = WARNING;
+							}
 						}
 					} else {
 						$msg .= " - ".$key." not in sync : master #keys=".$master_nkeys_in_db." slave ".$slave_ip." #keys=(unknown db)";
