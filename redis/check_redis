@@ -5,11 +5,12 @@ use strict;
 use Getopt::Long qw(:config gnu_getopt);
 use Redis;
 use Nagios::Plugin;
+use Data::Dumper;
 
 my $VERSION="0.1";
 my $np;
 
-$np = Nagios::Plugin->new(usage => "Usage: %s [--host|-H <host>] [--port|-p <port>] [ -c|--critical=<threshold> ] [ -w|--warning=<threshold>] [-?|--usage] [-V|--version] [-h|--help] [-v|--verbose] [-t|--timeout=<timeout>]",
+$np = Nagios::Plugin->new(usage => "Usage: %s [--host|-H <host>] [--port|-p <port>] [ -c|--critical=<threshold> ] [ -w|--warning=<threshold>] [-?|--usage] [-V|--version] [-h|--help] [-v|--verbose] [-t|--timeout=<timeout>] [ -k|--nkeyswarning=<threshold> ] [ -K|--nkeyscritical=<threshold> ]",
                           version => $VERSION,
                           blurb => 'This plugin checks the availability of a redis server, expecting that a slave server is sync with master, and the replication delay is not too high.',
                           license => "Brought to you AS IS, WITHOUT WARRANTY, under GPL. (C) Remi Paulmier <remi.paulmier\@gmail.com>",
@@ -40,6 +41,19 @@ $np->add_arg(spec => 'warning|w=s',
              default => 1,
             );
 
+$np->add_arg(spec => 'nkeyswarning|k=s',
+             help => q(Exit with WARNING status if the percentage difference in terms of number of keys in db between master and slave(s) is greater than FLOAT),
+             required => 0,
+             default => 0.05,
+            );
+
+
+$np->add_arg(spec => 'nkeyscritical|K=s',
+             help => q(Exit with CRITICAL status if the percentage difference in terms of the number of keys in db between master and slave(s) is greater than FLOAT),
+             required => 0,
+             default => 1.0,
+            );
+
 $np->getopts;
 my $ng = $np->opts;
 
@@ -67,16 +81,106 @@ my $msg = "Everything is OK";
 
 $redis->ping || $np->nagios_exit( CRITICAL, "Can't ping server $host:$port" );
 
+$msg = "role : ".$info->{'role'};
 if ($info->{'role'} eq "slave") {
+	$msg .= " - master : ".$info->{'master_host'}." - link status : ".$info->{'master_link_status'};
+
+	if ( $info->{'master_link_status'} ne "up" ) {
+		$code = CRITICAL;
+	}
+
 	$code = $np->check_threshold(check => $info->{'master_last_io_seconds_ago'});
-	$msg = ("redis replication is late (" .
-	        $info->{'master_last_io_seconds_ago'} .
-	        "s)"
-	       ) if $code != OK;
+	if ( $code != OK ) {
+		$msg .= " - redis replication is late (".$info->{'master_last_io_seconds_ago'}."s)";
+	} else {
+		$msg .= " - redis replication is ok (".$info->{'master_last_io_seconds_ago'}."s)";
+	}
 
 	if ($info->{'master_sync_in_progress'} != 0) {
-		$msg = "redis replication sync is in progress";
+		$msg .= " - redis replication sync is in progress";
 		$code = CRITICAL;
+	}
+
+} else {
+	$msg .= " - connected slaves : ".$info->{'connected_slaves'};
+	if ( $info->{'connected_slaves'} > 0 ) {
+		$msg .= " ->";
+		for (my $count = 0; $count < $info->{'connected_slaves'} ; $count++) {
+			$msg .= " ".$info->{"slave$count"}
+		}
+	}
+
+	# Check number of keys on all slaves in all dbs present on the master - if replication is OK the number must be the same
+	foreach my $key ( keys %{$info} ) {
+		# loop over redis dbs
+		if ( $key =~ /^db[0-9]*$/ ) {
+			#  get nkeys in db
+			my $master_nkeys_in_db = $info->{"$key"};
+			my $pos = index($master_nkeys_in_db,',');
+			$master_nkeys_in_db = substr($master_nkeys_in_db,0,$pos);
+			$pos = index($master_nkeys_in_db,'=');
+			$master_nkeys_in_db = substr($master_nkeys_in_db,$pos+1);
+
+			# loop over slaves
+			my $sync_error=0;
+			foreach (my $count = 0; $count < $info->{'connected_slaves'} ; $count++) {
+				# get slave info
+				my ($slave_ip,$slave_repl_port,$slave_status) = split(/,/,$info->{"slave$count"});
+		
+				# only check online slaves
+				if ( "$slave_status" eq "online" ) {
+					# connect to slave
+					my $redis_slave;
+					eval {
+						$redis_slave = Redis->new( server => "$slave_ip:$port", debug => 0);
+					};
+					if ($@) {
+						$np->nagios_exit( CRITICAL, "Can't connect to $slave_ip:$port" );
+					}
+					$redis_slave->ping || $np->nagios_exit( CRITICAL, "Can't ping server $slave_ip:$port" );
+
+					# get slave redis info
+					my $slave_info = $redis_slave->info();
+
+					# get slave nkeys in redis db
+					my $slave_nkeys_in_db = "";
+					if ( $slave_nkeys_in_db = $slave_info->{"$key"} ) {
+						$pos = index($slave_nkeys_in_db,',');
+						$slave_nkeys_in_db = substr($slave_nkeys_in_db,0,$pos);
+						$pos = index($slave_nkeys_in_db,'=');
+						$slave_nkeys_in_db = substr($slave_nkeys_in_db,$pos+1);
+
+		#  				print "db : ".$key."- #keys on master : ".$master_nkeys_in_db." - #keys on slave : ".$slave_nkeys_in_db."\n";
+
+						# compare db nkeys from master and slave
+						if ( "$master_nkeys_in_db" ne "$slave_nkeys_in_db" ) {
+							$sync_error++;
+		
+							my $percent_nkeys_diff = 0.;
+							if ( $master_nkeys_in_db != 0 ) {
+								$percent_nkeys_diff = sprintf("%.2f", abs( $slave_nkeys_in_db - $master_nkeys_in_db) / $master_nkeys_in_db * 100.);
+							} else {
+								$percent_nkeys_diff = 100.;
+							}
+
+							$msg .= " - ".$key." not in sync : master #keys=".$master_nkeys_in_db." slave ".$slave_ip." #keys=".$slave_nkeys_in_db." (".$percent_nkeys_diff." % difference)";
+							if (  $percent_nkeys_diff >= $ng->get('nkeyscritical') ) {
+								$code = CRITICAL;
+							} elsif ( $percent_nkeys_diff >= $ng->get('nkeyswarning') ) {
+								$code = WARNING;
+							}
+						}
+					} else {
+						$msg .= " - ".$key." not in sync : master #keys=".$master_nkeys_in_db." slave ".$slave_ip." #keys=(unknown db)";
+						$sync_error++;
+						$code = CRITICAL;
+					}
+				}
+			}
+			if ( $sync_error == 0 ) {
+				$msg .= " - ".$key." sync OK (".$master_nkeys_in_db." keys)";
+			}
+		}
 	}
 }
 
