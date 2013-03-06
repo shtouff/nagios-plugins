@@ -1,0 +1,29 @@
+#!/bin/bash
+
+# chef role where to put nodes we don't want to monitor the chef execution
+role="chef-disabled"
+
+. $(dirname $0)"/utils.sh"
+
+nodes=$( knife status --no-color -H  "NOT role:$role" | awk -F ', ' '{print $2}')
+nodenum=0
+for node in $nodes; do
+  nodenum=$[ $nodenum + 1]
+done
+
+if [ $nodenum -eq 0 ]; then
+	echo "OK: all nodes ran chef-client during last hour"
+	exit $STATE_OK
+elif [ $nodenum -gt 0 -a $nodenum -le 2 ]; then
+	echo "WARNING: $nodenum nodes failed to run chef-client during last hour"
+	echo "nodes: "$nodes
+	exit $STATE_WARNING
+elif [ $nodenum -gt 2 ]; then
+	echo "CRITICAL: $nodenum nodes failed to run chef-client during last hour"
+	echo "nodes: "$nodes
+	exit $STATE_CRITICAL
+else
+	echo "UNKNOWN: nodenum=[$nodenum], can't conclude"
+	exit $STATE_UNKNOWN
+fi
+
