@@ -19,12 +19,14 @@ sub getcurl {
 	
 	my $curl = WWW::Curl::Easy->new;
 	
+	open (my $fileb, ">", $response);
+	
 	$curl->setopt(CURLOPT_URL, "http://".$runtime->{host}.
 	              ":".$runtime->{port}.$uri);
 	$curl->setopt(CURLOPT_USERNAME, $runtime->{user});
 	$curl->setopt(CURLOPT_PASSWORD, $runtime->{password});
 	
-	$curl->setopt(CURLOPT_WRITEDATA, $response);
+	$curl->setopt(CURLOPT_WRITEDATA, $fileb);
 	
 	return $curl;
 }
