@@ -1,0 +1,206 @@
+#!/usr/bin/env perl
+
+use warnings;
+use strict;
+use Getopt::Long qw(:config gnu_getopt);
+use Nagios::Plugin;
+use JSON;
+use WWW::Curl::Easy;
+
+my $VERSION="0.1";
+my $np;
+
+my $runtime = { };
+
+sub getcurl {
+	
+	my $uri = shift;
+	my $response = shift;
+	
+	my $curl = WWW::Curl::Easy->new;
+	
+	$curl->setopt(CURLOPT_URL, "http://".$runtime->{host}.
+	              ":".$runtime->{port}.$uri);
+	$curl->setopt(CURLOPT_USERNAME, $runtime->{user});
+	$curl->setopt(CURLOPT_PASSWORD, $runtime->{password});
+	
+	$curl->setopt(CURLOPT_WRITEDATA, $response);
+	
+	return $curl;
+}
+
+sub getvhosts {
+	my @ra;
+	my $response;
+	my $curl = getcurl("/api/vhosts", \$response);
+	my $retcode = $curl->perform;
+
+	if ($retcode == 0) {
+		my $code = $curl->getinfo(CURLINFO_HTTP_CODE);
+		my $json = JSON->new->allow_nonref;
+		my $result = $json->decode($response);
+		
+		map { push @ra, $_->{name}} @{$result};
+		return @ra
+		  
+	} else {
+		print("An error happened: $retcode ".$curl->strerror($retcode)." ".$curl->errbuf."\n");
+	 }
+	1;
+}
+
+sub getqueues {
+	my $vhost = shift;
+	$vhost = "%2F" if ($vhost eq "/");
+	
+	my @ra;
+	my $response;
+	my $curl = getcurl("/api/queues/$vhost", \$response);
+	my $retcode = $curl->perform;
+	
+	if ($retcode == 0) {
+		my $code = $curl->getinfo(CURLINFO_HTTP_CODE);
+		my $json = JSON->new->allow_nonref;
+		my $result = $json->decode($response);
+		
+		map { push @ra, $_->{name}} @{$result};
+		return @ra
+		  
+	} else {
+		print("An error happened: $retcode ".$curl->strerror($retcode)." ".$curl->errbuf."\n");
+	}
+	1;
+}
+
+sub getqueuesize {
+	my $vhost = shift;
+	my $queue = shift;
+	$vhost = "%2F" if ($vhost eq "/");
+	
+	my $response;
+	my $curl = getcurl("/api/queues/$vhost/$queue", \$response);
+	my $retcode = $curl->perform;
+
+	if ($retcode == 0) {
+		my $code = $curl->getinfo(CURLINFO_HTTP_CODE);
+		my $json = JSON->new->allow_nonref;
+		my $result = $json->decode($response);
+		
+		return $result->{messages_ready};
+		
+	} else {
+		print("An error happened: $retcode ".$curl->strerror($retcode)." ".$curl->errbuf."\n");
+	 }
+	1;
+}
+
+$np = Nagios::Plugin->new(usage => "Usage: %s [--host|-H <host>] [--port|-p <port>] [--user|-u <user>] [--password|-P <password>][ -c|--critical=<threshold> ] [ -w|--warning=<threshold>] [-?|--usage] [-V|--version] [-h|--help] [-v|--verbose] [-t|--timeout=<timeout>]",
+                          version => $VERSION,
+                          blurb => 'This plugin checks the size of all the queues in a rabbit broker.',
+                          license => "Brought to you AS IS, WITHOUT WARRANTY, under GPL. (C) Remi Paulmier <remi.paulmier\@gmail.com>",
+                          shortname => "CHECK_RABBITQUEUES",
+                         );
+
+$np->add_arg(spec => 'host|H=s',
+             help => q(Check the host indicated in STRING (localhost)),
+             required => 0,
+             default => 'localhost',
+            );
+
+$np->add_arg(spec => 'port|p=i',
+             help => q(Use the TCP port indicated in INTEGER (15672)),
+             required => 0,
+             default => 15672,
+            );
+
+$np->add_arg(spec => 'password|P=s',
+             help => q(Use the password indicated in STRING (XXX)),
+             required => 0,
+             default => 'XXX',
+            );
+
+$np->add_arg(spec => 'user|u=s',
+             help => q(Use the user indicated in STRING (nagios)),
+             required => 0,
+             default => 'nagios',
+            );
+
+$np->add_arg(spec => 'critical|c=i',
+             help => q(Exit with CRITICAL status if a queue handles more than INTEGER messages (100)),
+             required => 0,
+             default => 100,
+            );
+
+$np->add_arg(spec => 'warning|w=i',
+             help => q(Exit with WARNING status if a queue carries more than INTEGER messages (80)),
+             required => 0,
+             default => 80,
+            );
+
+$np->add_arg(spec => 'queue|q=s',
+             help => q(Set the WARNING & CRITICAL thresholds for some particular queues indicated by formatted STRING (vhost:queue:warning:critical,vhost:queue:critical:warning,...) ),
+             required => 0,
+            );
+
+# getopts
+$np->getopts;
+my $ng = $np->opts;
+
+# manage timeout
+alarm $ng->timeout;
+
+# host, port, user && password
+$runtime->{host} = $ng->get('host');
+$runtime->{port} = $ng->get('port');
+$runtime->{user} = $ng->get('user');
+$runtime->{password} = $ng->get('password');
+
+# default thresholds
+$runtime->{warning} = $ng->get('warning');
+$runtime->{critical} = $ng->get('critical');
+
+# verbosity
+$runtime->{verbose} = $ng->get('verbose');
+
+# get particular queue thresholds
+if (my $qmask = $ng->get('queue')) {
+
+	map {
+		my ($vhost,$queue,$warning,$critical) = split /:/,$_;
+		
+		$runtime->{queues}{$vhost.":".$queue}{warning} = $warning;
+		$runtime->{queues}{$vhost.":".$queue}{critical} = $critical;
+	} split /,/,$qmask;
+}
+
+my $finalstate = OK;
+my @finalmsgs;
+
+foreach my $vhost (&getvhosts) {
+	foreach my $queue (getqueues($vhost)) {
+		
+		my $size = getqueuesize($vhost, $queue);
+		my $warn = $runtime->{warning};
+		my $crit = $runtime->{critical};
+
+		print STDERR "q:".$vhost.":".$queue.":".$size."\n" if $runtime->{verbose};
+		
+		if (defined($runtime->{queues}{$vhost.":".$queue})) {
+			# specific thresholds for this particular queue detected
+			
+			$warn = $runtime->{queues}{$vhost.":".$queue}{warning};
+			$crit = $runtime->{queues}{$vhost.":".$queue}{critical};
+		}
+		
+		if ($size > $crit) {
+			$finalstate = CRITICAL;
+			push @finalmsgs, "$vhost:$queue:$size>$crit";
+			
+		} elsif ($size > $warn) {
+			$finalstate = WARNING if $finalstate != CRITICAL;
+			push @finalmsgs, "$vhost:$queue:$size>$warn";
+		}
+	}
+}
+
+$np->nagios_exit($finalstate, join " ", @finalmsgs);
