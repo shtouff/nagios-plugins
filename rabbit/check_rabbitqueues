@@ -44,8 +44,8 @@ sub getvhosts {
 		return @ra
 		  
 	} else {
-		print("An error happened: $retcode ".$curl->strerror($retcode)." ".$curl->errbuf."\n");
-	 }
+		$np->nagios_exit(CRITICAL, "an error happened: $retcode ".$curl->strerror($retcode));
+	}
 	1;
 }
 
@@ -67,7 +67,7 @@ sub getqueues {
 		return @ra
 		  
 	} else {
-		print("An error happened: $retcode ".$curl->strerror($retcode)." ".$curl->errbuf."\n");
+		$np->nagios_exit(CRITICAL, "an error happened: $retcode ".$curl->strerror($retcode));
 	}
 	1;
 }
@@ -89,7 +89,7 @@ sub getqueuesize {
 		return $result->{messages_ready};
 		
 	} else {
-		print("An error happened: $retcode ".$curl->strerror($retcode)." ".$curl->errbuf."\n");
+		$np->nagios_exit(CRITICAL, "an error happened: $retcode ".$curl->strerror($retcode));
 	 }
 	1;
 }
