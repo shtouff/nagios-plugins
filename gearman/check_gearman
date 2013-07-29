@@ -14,19 +14,25 @@ use warnings;
 
 use Nagios::Plugin;
 
-my $VERSION="0.2.1";
+my $VERSION="0.2.2";
 my $np;
 
-$np = Nagios::Plugin->new(usage => "Usage: %s -f|--flist <func1[:threshold1],..,funcN[:thresholdN]> [--host|-H <host>] [--port|-p <port>] [ -c|--critworkers=<threshold> ] [ -w|--warnworkers=<threshold>] [-?|--usage] [-V|--version] [-h|--help] [-v|--verbose] [-t|--timeout=<timeout>]",
+$np = Nagios::Plugin->new(usage => "Usage: %s [-f|--flist <func1[:threshold1],..,funcN[:thresholdN]>] [-T|--thresholdseparator <char>] [--host|-H <host>] [--port|-p <port>] [ -c|--critworkers=<threshold> ] [ -w|--warnworkers=<threshold>] [-?|--usage] [-V|--version] [-h|--help] [-v|--verbose] [-t|--timeout=<timeout>]",
                           version => $VERSION,
-                          blurb => 'This plugin checks a gearman job server, expecting that every function in function-list arg is registered by at least one worker, and expecting that job_total is not too much high.',
+                          blurb => 'This plugin checks a gearman job server, expecting that every function on the server or in function-list arg is registered by at least one worker, and expecting that job_total is not too much high.',
                           license => "Brought to you AS IS, WITHOUT WARRANTY, under GPL. (C) Remi Paulmier <remi.paulmier\@gmail.com>",
                           shortname => "CHECK_GEARMAN",
                          );
 
 $np->add_arg(spec => 'flist|f=s',
-             help => q(Check for the functions listed in STRING, separated by comma. If optional threshold is given (separated by :), check that waiting jobs for this particular function are not exceeding that value),
-             required => 1,
+             help => q(Check for the functions listed in STRING, separated by commas, or all the functions on the server if * is specified. If optional threshold is given (separated by : or the provided -thresholdseparator), check that waiting jobs for this particular function are not exceeding that value),
+             required => 0,
+            );
+
+$np->add_arg(spec => 'thresholdseparator|T=s',
+             help => q(Threshold separator in the function list, : if not specified),
+             required => 0,
+             default => ':',
             );
 
 $np->add_arg(spec => 'host|H=s',
@@ -89,15 +95,32 @@ foreach (`$cmd 2>/dev/null | grep -v '^\\.'`) {
 	                                 worker_count => $worker_count };
 }
 
+# get threshold separator
+my $threshold_separator = $ng->get('thresholdseparator');
+
 # get function list
-my @flist = split /,/, $ng->get('flist');
+my @flist;
+
+my $flist = $ng->get('flist');
+
+# * means: check all the registered functions
+if (!defined $flist || $flist =~ /^\*/) {
+	my $threshold;
+	if (defined $flist && $flist =~ /^\*$threshold_separator(\d+)$/) {
+		$threshold = $1;
+	}
+	@flist = map { defined $threshold ? "$_$threshold_separator$threshold" : $_ }
+		keys %{ $runtime->{'funcs'} };
+} else {
+	@flist = split /,/, $flist;
+}
 
 foreach (@flist) {
 
 	my ($fname, $fthreshold);
 
-	if (/\:/) {
-		($fname, $fthreshold) = split /:/;
+	if (/$threshold_separator/) {
+		($fname, $fthreshold) = split /$threshold_separator/;
 	} else {
 		($fname, $fthreshold) = ($_, -1);
 	}
