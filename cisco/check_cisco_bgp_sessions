@@ -1,0 +1,203 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+
+use Net::SNMP;
+use Nagios::Plugin;
+
+my $VERSION="0.1";
+
+# Copyright Remi Paulmier <remi.paulmier@gmail.com>
+# brought to you AS IS, under WTF Public License
+#
+# get a fresh copy of this plugin at:
+# https://github.com/shtouff/nagios-plugins/cisco
+
+# Cisco SNMP Object Navigator
+# http://tools.cisco.com/Support/SNMP/do/BrowseOID.do?local=en&translate=Translate&objectInput=1.3.6.1.2.1.15.3.1.7#oidContent
+use constant OID_BGP                   => ".1.3.6.1.2.1.15";
+use constant OID_BGP_PEER_TABLE        => OID_BGP . ".3";
+use constant OID_BGP_PEER_ENTRY        => OID_BGP_PEER_TABLE . ".1";
+use constant OID_BGP_PEER_IDENTIFIER   => OID_BGP_PEER_ENTRY . ".1";
+use constant OID_BGP_PEER_STATE        => OID_BGP_PEER_ENTRY . ".2";
+use constant OID_BGP_PEER_ADMIN_STATUS => OID_BGP_PEER_ENTRY . ".3";
+#...
+use constant OID_BGP_PEER_FSM_ET       => OID_BGP_PEER_ENTRY . ".16";
+
+my $run = {};
+my $np;
+
+sub isSubOid {
+	my $rootOid  = shift;
+	my $otherOid = shift;
+
+	return 0 if length($otherOid) < length($rootOid);
+
+	my $comOid = substr( $otherOid, 0, length($rootOid) );
+
+	return 1 if $comOid eq $rootOid;
+
+	0;
+}
+
+sub snmpwalk {
+	my $community = shift;
+	my $host      = shift;
+	my $oid       = shift;
+	
+	my %table;     
+	my $rootOid   = $oid;    # saves the wanted oid
+
+	my ( $session, $error ) = Net::SNMP->session(
+		-hostname    => $host,
+		-version     => 1,
+		-community   => $community,
+		-nonblocking => 0
+	);
+	if ( !defined $session ) {
+		printf "ERROR: Failed to create session for host '%s': %s.\n",
+		  $host, $error;
+	}
+
+  OID:
+	while ( my $result = $session->get_next_request( -varbindlist => [$oid] ) )
+	{
+
+		if ( defined $result ) {
+			foreach my $key ( keys(%$result) ) {
+				last OID if ( ! isSubOid( $rootOid, $key ) );
+				$table{$key} = $result->{$key};
+				$oid = $key;
+			}
+		}
+	}
+
+	# if table is empty, try a simple get on wanted oid
+	if (scalar keys (%table) == 0) {
+		my $result = $session->get_request( -varbindlist => [$rootOid] );
+		if ( defined $result ) {
+			foreach my $key ( keys(%$result) ) {
+				$table{$key} = $result->{$key};
+			}
+		}
+	}
+	
+	return \%table;
+}
+
+sub get_peer_state {
+	my $peer = shift;
+
+	my $oid = OID_BGP_PEER_STATE . ".$peer";
+	my $walk = snmpwalk( $run->{community}, $run->{host}, $oid );
+	my $state = $walk->{$oid};
+
+	# return a string based on numeric matching designed by Cisco
+	if ($state eq "1") {
+        	return "idle";
+        } elsif ($state eq "2") {
+		return "connect";
+	} elsif ($state eq "3") {
+		return "active";
+	} elsif ($state eq "4") {
+		return "opensent";
+	} elsif ($state eq "5") {
+		return "openconfirm";
+	} elsif ($state eq "6") {
+		return "established";
+	} else {
+		return "UNKNOWN";
+	}
+}
+
+sub get_peer_et {
+	my $peer = shift;
+
+	my $oid = OID_BGP_PEER_FSM_ET . ".$peer";
+	my $walk = snmpwalk( $run->{community}, $run->{host}, $oid );
+	my $et = $walk->{$oid};
+
+	return $et;
+}
+
+sub get_peers {
+
+	debug("uc%iou", 6);
+	my $walk = snmpwalk( $run->{community}, $run->{host}, OID_BGP_PEER_IDENTIFIER );
+	my @peers;
+
+	foreach my $oid (keys (%$walk)) {
+		# only the OID contains the peer IP address. 
+		# value is the BGP router id
+		my $peer = substr $oid, length(OID_BGP_PEER_IDENTIFIER) + 1;
+		push @peers, $peer;
+	}
+
+	return @peers;
+}
+
+sub debug {
+	my $format = shift;
+	my @list = @_;
+
+	my $ng = $np->opts;
+	printf STDERR $format, @list if $ng->get('verbose');
+	0;
+}
+
+$np = Nagios::Plugin->new(usage => "Usage: %s [-H|--host=<host>] [-c|--community=<community>] [-m|--minet=<duration>] [-V|--version] [-h|--help] [--usage] [-v|--verbose] [-t|--timeout=<timeout>]",
+  version => $VERSION,
+  blurb => 'This plugin checks the BGP sessions of a Cisco router, via SNMP.',
+  license => "Brought to you AS IS, WITHOUT WARRANTY, under GPL. (C) Remi Paulmier <remi.paulmier\@gmail.com>",
+  shortname => "CHECK_CISCO_BGP_SESSIONS",
+);
+
+$np->add_arg(spec => 'host|H=s',
+  help => q(Check the host indicated in STRING (localhost)),
+  required => 0,
+  default => 'localhost',
+);
+
+$np->add_arg(spec => 'community|c=s',
+  help => q(Use the SNMP community indicated in STRING (priv)),
+  required => 0,
+  default => 'priv',
+);
+
+$np->add_arg(spec => 'minet|m=i',
+  help => q(Minimum established time for a session below which we issue a WARNING),
+  required => 0,
+  default => 900,
+);
+
+# getopts
+$np->getopts;
+my $ng = $np->opts;
+
+# manage timeout
+alarm $ng->timeout;
+
+$run->{community} = $ng->get('community');
+$run->{host} = $ng->get('host');
+$run->{minet} = $ng->get('minet');
+
+foreach my $peer (&get_peers) {
+	my $state = get_peer_state($peer);
+
+	if ($state ne "established" ) {
+
+		$np->add_message( CRITICAL, "$peer is $state");
+	} else {
+		my $et = get_peer_et($peer);
+    		if ($et < $run->{minet}) {
+			$np->add_message( WARNING, "session with $peer is only $et long");
+    		} else {
+			$np->add_message( OK, "$peer is OK since ${et}s");
+		}
+  	}
+}
+
+my ($code, $message) = $np->check_messages();
+$np->nagios_exit( $code, $message );
+
