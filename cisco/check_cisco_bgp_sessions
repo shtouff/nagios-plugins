@@ -90,6 +90,7 @@ sub get_peer_state {
 	my $peer = shift;
 
 	my $oid = OID_BGP_PEER_STATE . ".$peer";
+	debug("snmp walking %s@%s:%s \n", $run->{community}, $run->{host}, $oid);
 	my $walk = snmpwalk( $run->{community}, $run->{host}, $oid );
 	my $state = $walk->{$oid};
 
@@ -115,7 +116,8 @@ sub get_peer_et {
 	my $peer = shift;
 
 	my $oid = OID_BGP_PEER_FSM_ET . ".$peer";
-	my $walk = snmpwalk( $run->{community}, $run->{host}, $oid );
+	debug("snmp walking %s@%s:%s \n", $run->{community}, $run->{host}, $oid);
+my $walk = snmpwalk( $run->{community}, $run->{host}, $oid );
 	my $et = $walk->{$oid};
 
 	return $et;
@@ -123,7 +125,8 @@ sub get_peer_et {
 
 sub get_peers {
 
-	debug("uc%iou", 6);
+	debug("snmp walking %s@%s:%s \n", $run->{community}, $run->{host}, 
+	  OID_BGP_PEER_IDENTIFIER);
 	my $walk = snmpwalk( $run->{community}, $run->{host}, OID_BGP_PEER_IDENTIFIER );
 	my @peers;
 
