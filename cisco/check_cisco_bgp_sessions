@@ -65,7 +65,7 @@ sub snmpwalk {
 	{
 
 		if ( defined $result ) {
-			foreach my $key ( keys($result) ) {
+			foreach my $key ( keys(%$result) ) {
 				last OID if ( ! isSubOid( $rootOid, $key ) );
 				$table{$key} = $result->{$key};
 				$oid = $key;
@@ -77,7 +77,7 @@ sub snmpwalk {
 	if (scalar keys (%table) == 0) {
 		my $result = $session->get_request( -varbindlist => [$rootOid] );
 		if ( defined $result ) {
-			foreach my $key ( keys($result) ) {
+			foreach my $key ( keys(%$result) ) {
 				$table{$key} = $result->{$key};
 			}
 		}
@@ -127,7 +127,7 @@ sub get_peers {
 	my $walk = snmpwalk( $run->{community}, $run->{host}, OID_BGP_PEER_IDENTIFIER );
 	my @peers;
 
-	foreach my $oid (keys ($walk)) {
+	foreach my $oid (keys (%$walk)) {
 		# only the OID contains the peer IP address. 
 		# value is the BGP router id
 		my $peer = substr $oid, length(OID_BGP_PEER_IDENTIFIER) + 1;
