@@ -194,7 +194,7 @@ foreach my $peer (&get_peers) {
 	} else {
 		my $et = get_peer_et($peer);
     		if ($et < $run->{minet}) {
-			$np->add_message( WARNING, "session with $peer is only $et long");
+			$np->add_message( WARNING, "session with $peer is only ${et}s old");
     		} else {
 			$np->add_message( OK, "$peer is OK since ${et}s");
 		}
