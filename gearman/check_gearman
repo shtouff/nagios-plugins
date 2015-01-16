@@ -132,13 +132,13 @@ foreach (@flist) {
 		($fname, $fthreshold) = ($_, -1);
 	}
 
-    if ($ng->{'skipallzeros'} &&
-        !$runtime->{'funcs'}{"$fname"}{'job_total'} &&
-        !$runtime->{'funcs'}{"$fname"}{'job_running'} &&
-        !$runtime->{'funcs'}{"$fname"}{'worker_count'}) {
+	if ($ng->{'skipallzeros'} &&
+	    !$runtime->{'funcs'}{"$fname"}{'job_total'} &&
+	    !$runtime->{'funcs'}{"$fname"}{'job_running'} &&
+	    !$runtime->{'funcs'}{"$fname"}{'worker_count'}) {
 
-        next;
-    }
+		next;
+	}
 
 	if (!defined($runtime->{'funcs'}{"$fname"}) &&
 	    $runtime->{'status'} <= CRITICAL) {
