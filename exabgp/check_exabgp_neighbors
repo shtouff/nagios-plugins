@@ -2,7 +2,7 @@
 
 #set -x
 
-exabgpcli="sudo exabgpcli"
+exabgpcli="exabgpcli"
 
 STATE_OK=0
 STATE_WARNING=1
