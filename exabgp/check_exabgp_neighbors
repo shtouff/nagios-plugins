@@ -43,7 +43,7 @@ fi
 non_established=$(echo "$summary" | tail -n+2 | grep -v established)
 if [[ x$non_established != x ]]; then
   peers=$(echo "$non_established" | cut -f 1 -d \ )
-  echo "CRITICAL: some peers are not connected: $peers"
+  echo "CRITICAL: some peers are not connected:" $peers
   exit $STATE_CRITICAL
 else
   echo "OK: all peers connected"
