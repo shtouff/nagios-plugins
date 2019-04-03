@@ -1,0 +1,51 @@
+#!/bin/bash
+
+#set -x
+
+exabgpcli="sudo exabgpcli"
+
+STATE_OK=0
+STATE_WARNING=1
+STATE_CRITICAL=2
+STATE_UNKNOWN=3
+
+usage() {
+  cat <<EOF 1>&2
+Usage: $0 [-c <exabgpcli_cmd>]
+
+  default for exabgpcli_cmd is: $exabgpcli
+
+EOF
+  exit $STATE_UNKNOWN
+}
+
+while getopts ":c:" option; do
+  case "${option}" in
+    c)
+      exabgpcli=${OPTARG}
+      ;;
+    *)
+      usage
+      ;;
+  esac
+done
+
+if [[ x"${exabgpcli}" = x ]]; then
+    usage
+fi
+
+summary="$($exabgpcli show neighbor summary 2>&1)"
+if [[ $? -ne 0 ]]; then
+  echo "UNKNOWN: $summary"
+  exit $STATE_UNKNOWN
+fi
+
+non_established=$(echo "$summary" | tail -n+2 | grep -v established)
+if [[ x$non_established != x ]]; then
+  peers=$(echo "$non_established" | cut -f 1 -d \ )
+  echo "CRITICAL: some peers are not connected: $peers"
+  exit $STATE_CRITICAL
+else
+  echo "OK: all peers connected"
+  exit $STATE_OK
+fi
