@@ -17,7 +17,7 @@ use Nagios::Plugin;
 my $VERSION="0.2.2";
 my $np;
 
-$np = Nagios::Plugin->new(usage => "Usage: %s [-f|--flist <func1[:threshold1],..,funcN[:thresholdN]>] [-T|--thresholdseparator <char>] [--host|-H <host>] [--port|-p <port>] [ -c|--critworkers=<threshold> ] [ -w|--warnworkers=<threshold>] [-?|--usage] [-V|--version] [-h|--help] [-v|--verbose] [-t|--timeout=<timeout>]",
+$np = Nagios::Plugin->new(usage => "Usage: %s [-f|--flist <func1[:threshold1],..,funcN[:thresholdN]>] [-T|--thresholdseparator <char>] [--host|-H <host>] [--port|-p <port>] [ -c|--critworkers=<threshold> ] [ -w|--warnworkers=<threshold>] [-?|--usage] [-V|--version] [-h|--help] [-v|--verbose] [-t|--timeout=<timeout>] [-s|--skipallzeros]",
                           version => $VERSION,
                           blurb => 'This plugin checks a gearman job server, expecting that every function on the server or in function-list arg is registered by at least one worker, and expecting that job_total is not too much high.',
                           license => "Brought to you AS IS, WITHOUT WARRANTY, under GPL. (C) Remi Paulmier <remi.paulmier\@gmail.com>",
@@ -58,6 +58,13 @@ $np->add_arg(spec => 'warnworkers|w=i',
              required => 0,
              default => 4,
             );
+
+$np->add_arg(spec => 'skipallzeros|s',
+             help => q(Skip functions with job_total, job_running and worker_count all 0. This option is useful when monitoring all functions with * and one of the functions previously registered has been removed. Restarting gearman would flush it away, but sometimes you cannot do it.),
+             required => 0,
+             default => 0,
+            );
+
 
 $np->getopts;
 my $ng = $np->opts;
@@ -123,6 +130,14 @@ foreach (@flist) {
 		($fname, $fthreshold) = split /$threshold_separator/;
 	} else {
 		($fname, $fthreshold) = ($_, -1);
+	}
+
+	if ($ng->{'skipallzeros'} &&
+	    !$runtime->{'funcs'}{"$fname"}{'job_total'} &&
+	    !$runtime->{'funcs'}{"$fname"}{'job_running'} &&
+	    !$runtime->{'funcs'}{"$fname"}{'worker_count'}) {
+
+		next;
 	}
 
 	if (!defined($runtime->{'funcs'}{"$fname"}) &&
